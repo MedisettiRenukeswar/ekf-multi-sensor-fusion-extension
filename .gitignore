@@ -1,0 +1,73 @@
+# ── Python ────────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.mypy_cache/
+.ruff_cache/
+
+# ── Jupyter ───────────────────────────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+venv/
+env/
+.env/
+.venv/
+
+# ── LaTeX compiled artefacts ──────────────────────────────────────────────────
+paper/*.aux
+paper/*.bbl
+paper/*.blg
+paper/*.log
+paper/*.out
+paper/*.toc
+paper/*.fls
+paper/*.fdb_latexmk
+paper/*.synctex.gz
+paper/*.pdf
+paper/IEEEtran.cls
+
+# ── Dataset files (large binary — download separately) ───────────────────────
+datasets/data/
+datasets/EuRoC/
+datasets/TUM-VI/
+datasets/KITTI/
+*.bag
+*.rosbag
+*.h5
+*.hdf5
+data.csv.gz
+
+# ── Raw Monte Carlo runs (large — only stats CSVs are committed) ──────────────
+results/*_raw.csv
+results/n50_benchmark_*.csv
+results/full_benchmark_*.csv
+results/extra_*.csv
+results/degradation_*.csv
+results/standard_N30_raw.csv
+results/qr_adaptation_comparison.csv
+results/phase6/
+
+# ── OS artefacts ─────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace

@@ -1,0 +1,12 @@
+EKF Multi-Sensor Fusion — Results
+Medisetti Renukeswar
+========================================
+Simulation duration  : 40.0 s
+IMU rate             : 100 Hz
+Camera rate          : 30 Hz
+Trajectory           : Figure-8, scale 3.0 m
+========================================
+ATE EKF fusion       : 0.0374 m
+ATE IMU-only         : 5.8766 m
+RPE EKF              : 0.0443 m
+Improvement          : 99.4%

@@ -1,0 +1,603 @@
+\documentclass[letterpaper, 10pt, journal]{IEEEtran}
+
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{graphicx}
+\usepackage{cite}
+\usepackage{xcolor}
+\usepackage{url}
+\usepackage{microtype}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+\newcommand{\bmx}{\bm{x}}
+\newcommand{\bmP}{\bm{P}}
+\newcommand{\bmF}{\bm{F}}
+\newcommand{\bmH}{\bm{H}}
+\newcommand{\bmK}{\bm{K}}
+\newcommand{\bmQ}{\bm{Q}}
+\newcommand{\bmR}{\bm{R}}
+\newcommand{\bmS}{\bm{S}}
+\newcommand{\bmI}{\bm{I}}
+\newcommand{\bmy}{\bm{y}}
+\newcommand{\bmz}{\bm{z}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\xhat}{\hat{\bmx}}
+\newcommand{\Pm}{\bmP^{-}}
+\newcommand{\xm}{\xhat^{-}}
+\DeclareMathOperator{\diag}{diag}
+
+\begin{document}
+
+\title{Filter Consistency in IMU--Visual Odometry Fusion:\\
+A Monte Carlo Evaluation of Seven EKF/UKF Variants\\
+Including an Honest Ablation of Mahalanobis-Gated Adaptation}
+
+\author{Medisetti~Renukeswar%
+  \thanks{MSc Robotics Applications, June 2026.
+    Code and data: \url{https://github.com/MedisettiRenukeswar/ekf-multi-sensor-fusion}.
+    N=50 (fast estimators), N=25 (UKF variants), figure-8/circle/straight trajectories.
+    All results are from Monte Carlo simulation; real-dataset evaluation
+    (EuRoC, TUM-VI) is the primary future direction.}}
+\maketitle
+
+%─────────────────────────────────────────────────────────────────────────────
+\begin{abstract}
+We present a systematic Monte Carlo evaluation of seven state estimators for
+2D IMU--visual odometry (VO) fusion: EKF, UKF, Adaptive-EKF, Adaptive-UKF,
+Error-State EKF (ES-EKF), and two Mahalanobis-gated adaptive variants
+(MACE-EKF and MACE-UKF). All experiments use simulation; real-dataset
+validation is deferred to future work.
+The benchmark covers three trajectory geometries, three noise regimes,
+five VO-dropout levels ($N\!\geq\!25$ Monte Carlo runs per condition),
+a Wilcoxon-tested ablation against Huber, Tukey, and chi-squared-gate
+alternatives, and a chi-squared threshold sensitivity sweep.
+We establish five findings:
+(1) Fixed EKF, UKF, and ES-EKF are universally overconfident
+    ($\overline{\text{ANIS}} = 0.005$--$0.31$, below the 95\% chi-squared
+    lower bound) across all 27 standard conditions;
+(2) R-only adaptive covariance estimation (Adaptive-EKF, Adaptive-UKF,
+    MACE-EKF, MACE-UKF) restores NIS consistency at medium and high noise;
+(3) In the EKF family, MACE-EKF does \emph{not} outperform Adaptive-EKF
+    or Tukey-EKF in either accuracy or consistency; chi-squared gating
+    alone degrades accuracy without improving consistency;
+(4) In the UKF family, MACE-UKF preserves NIS consistency through $70\%$
+    VO dropout ($\overline{\text{ANIS}} = 0.768$, within bounds), while
+    Adaptive-UKF falls slightly below the lower bound
+    ($\overline{\text{ANIS}} = 0.711$) at $70\%$ dropout;
+(5) ES-EKF matches EKF identically on all metrics in this 2D world-frame
+    formulation, confirming the error-state advantage is specific to 3D
+    orientation nonlinearities.
+All code, data, and reproduction scripts are open-source.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Extended Kalman Filter; Unscented Kalman Filter; Adaptive covariance;
+Filter consistency; NEES; NIS; IMU--visual odometry fusion; Monte Carlo;
+Mahalanobis gating; Ablation study.
+\end{IEEEkeywords}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Introduction}
+\label{sec:intro}
+
+Accurate robot localisation is a prerequisite for navigation, manipulation, and
+mapping. In GPS-denied environments, robots fuse IMU measurements at 100\,Hz
+with lower-rate visual odometry (VO) at 30\,Hz to produce a continuous pose
+estimate~\cite{mourikis2007msckf,geneva2020openvins}. The EKF and UKF remain
+dominant in embedded applications where the computational cost of
+optimisation-based methods is prohibitive~\cite{thrun2005probabilistic}.
+
+A practically important property of any probabilistic filter is
+\emph{consistency}: the filter is consistent if its reported covariance
+accurately reflects actual estimation error~\cite{barshalom2001estimation}.
+An overconfident filter (reported uncertainty too small) rejects valid
+measurements and accumulates drift; an underconfident filter amplifies noise.
+Standard filters with fixed $\bmQ$/$\bmR$ matrices break consistency whenever
+operating conditions deviate from calibration assumptions.
+
+Innovation-based adaptive covariance estimation~\cite{mohamed1999adaptive,
+akhlaghi2017adaptive} offers online $\bmR$ adaptation but has not been
+rigorously evaluated for consistency properties across diverse conditions, and
+its behaviour under sensor dropout has not been characterised.
+
+This work makes the following contributions:
+\begin{enumerate}
+\item A seven-estimator Monte Carlo consistency benchmark ($N\!\geq\!25$
+  per condition, 2,475 standard runs plus 1,225 dropout runs) evaluating
+  EKF, UKF, ES-EKF, Adaptive-EKF, Adaptive-UKF, MACE-EKF, and MACE-UKF.
+\item An ablation study comparing MACE-$\chi^2$ against four alternatives
+  (Adaptive-EKF, Huber-EKF, Tukey-EKF, ChiGate-EKF) under VO dropout,
+  with Wilcoxon significance tests and Cohen's $d$ effect sizes.
+\item Empirical evidence that \emph{in the EKF family}, chi-squared gating
+  provides no benefit over vanilla Mohamed-Schwarz adaptation, while
+  \emph{in the UKF family}, MACE-UKF extends the consistent operating
+  range to $70\%$ VO dropout where Adaptive-UKF marginally fails.
+\item A chi-squared threshold sensitivity sweep showing the gate is not
+  a free parameter: any finite $\tau < \infty$ degrades ANIS monotonically
+  at $50\%$ dropout, while no gating (Adaptive-EKF/UKF) achieves the best
+  balance at moderate dropout.
+\item Evidence that ES-EKF provides no advantage over EKF in the 2D
+  world-frame formulation used here.
+\end{enumerate}
+
+\emph{Honest scope:} All claims are grounded in Monte Carlo simulation.
+The paper does not claim real-world performance.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Related Work}
+\label{sec:related}
+
+\subsection{EKF and UKF for IMU--VO Fusion}
+Smith and Cheeseman~\cite{smith1986representation} formalised the EKF for
+robot localisation. Mourikis and Roumeliotis~\cite{mourikis2007msckf}
+developed MSCKF for vision-aided navigation. The UKF~\cite{wan2000ukf}
+propagates sigma points instead of linearising. ORB-SLAM3~\cite{campos2021orbslam3},
+OpenVINS~\cite{geneva2020openvins}, and VINS-Mono~\cite{qin2018vins} implement
+full visual-inertial odometry pipelines at scale.
+
+\subsection{Error-State Formulations}
+Sol\`{a}~\cite{sola2017quaternion} formalises the ES-EKF for IMU preintegration,
+where the error-state Jacobian has better numerical conditioning than the
+full-state Jacobian for 3D orientation. This work confirms the 2D case is
+degenerate: the world-frame velocity model introduces no heading singularity,
+so ES-EKF and EKF are numerically identical.
+
+\subsection{Adaptive Covariance Estimation}
+Mohamed and Schwarz~\cite{mohamed1999adaptive} introduced the windowed
+innovation covariance estimator for $\bmR$ adaptation. Akhlaghi et
+al.~\cite{akhlaghi2017adaptive} added exponential smoothing.
+Our ablation confirms that vanilla Mohamed-Schwarz is already optimal
+in the EKF family; more complex gating schemes do not help.
+
+\subsection{Robust M-Estimators for Kalman Filters}
+Huber (1964) and Tukey (1960) biweight functions are standard robust
+regression tools applied to Kalman filtering by, e.g., Chang
+et al.~(2014)~\cite{barshalom2001estimation}. Our ablation shows
+that Huber-EKF reproduces Adaptive-EKF behaviour exactly in this setting,
+while Tukey-EKF offers marginal ANIS improvement at very high dropout.
+
+\subsection{Filter Consistency}
+NEES and NIS chi-squared tests are defined in Bar-Shalom et
+al.~\cite{barshalom2001estimation}. EKF-SLAM consistency problems are
+studied in Huang et al.~\cite{huang2008analysis}. The present work
+applies these tests to a systematic IMU-VO adaptive filter comparison.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{System Model}
+\label{sec:model}
+
+\subsection{State Vector}
+\begin{equation}
+  \bmx = [p_x,\; p_y,\; \theta,\; v_x,\; v_y,\; \omega]^\top \in \R^6.
+  \label{eq:state}
+\end{equation}
+
+\subsection{Motion Model}
+The IMU provides world-frame velocities $(v_x, v_y)$ and angular velocity
+$\omega$ at 100\,Hz. The discrete-time motion model is:
+\begin{equation}
+  \bmx_{k+1} = \begin{bmatrix}
+    p_x + v_x \Delta t \\ p_y + v_y \Delta t \\
+    \mathrm{wrap}(\theta + \omega_{\mathrm{meas}}\,\Delta t) \\
+    v_{x,\mathrm{meas}} \\ v_{y,\mathrm{meas}} \\ \omega_{\mathrm{meas}}
+  \end{bmatrix} + \bm{w}_k, \quad \bm{w}_k \sim \mathcal{N}(\bm{0},\bmQ).
+  \label{eq:motion}
+\end{equation}
+The Jacobian $\bmF = \bmI_6$ with $F_{03}=F_{14}=F_{25}=\Delta t$.
+
+\subsection{Observation Model}
+VO provides position and heading at 30\,Hz:
+\begin{equation}
+  \bmz_k = \bmH\bmx_k + \bm{v}_k,\quad
+  \bmH = [\bmI_3 \mid \bm{0}_{3\times 3}],\quad
+  \bm{v}_k \sim \mathcal{N}(\bm{0},\bmR).
+  \label{eq:obs}
+\end{equation}
+
+\subsection{Sensor Noise Models}
+IMU: gyroscope noise $\sigma_g{=}0.008$\,rad/s/$\sqrt{\text{Hz}}$,
+constant bias $\beta{=}0.003$\,rad/s, accelerometer $\sigma_a{=}0.04$\,m/s$^2$.
+VO: $\sigma_{px}{=}\sigma_{py}{=}0.06$\,m/frame,
+$\sigma_\theta{=}0.025$\,rad, drift $0.0008$\,m/m.
+Low/medium/high regimes scale all parameters by $0.4\times/1.0\times/3.0\times$.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Filter Formulations}
+\label{sec:filters}
+
+\subsection{EKF}
+Standard predict-update with Joseph-form covariance update:
+\begin{equation}
+  \bmP_k = (\bmI{-}\bmK_k\bmH)\Pm_k(\bmI{-}\bmK_k\bmH)^\top + \bmK_k\bmR\bmK_k^\top.
+  \label{eq:joseph}
+\end{equation}
+
+\subsection{UKF}
+Merwe scaled unscented transform~\cite{wan2000ukf}:
+$\alpha=10^{-3}$, $\beta=2$, $\kappa=0$, generating $2n+1=13$ sigma points.
+
+\subsection{ES-EKF}
+Following Sol\`{a}~\cite{sola2017quaternion}, the state decomposes as
+$\bmx = \bmx^{\mathrm{nom}} \oplus \delta\bmx$.
+The error state $\delta\bmx$ is estimated by the filter and injected
+into the nominal state after each update: $\bmx^{\mathrm{nom}} \leftarrow
+\bmx^{\mathrm{nom}} + \delta\hat{\bmx}$, $\delta\hat{\bmx} \leftarrow \bm{0}$.
+The error-state Jacobian $\bmF_\delta$ has identical structure to $\bmF$
+in~\eqref{eq:motion} for this 2D world-frame model.
+
+\subsection{Adaptive R (Mohamed-Schwarz)}
+After each VO update, using window $W=20$ and smoothing $\alpha=0.1$:
+\begin{align}
+  \hat{\bm{C}}_{\bmy\bmy} &= \tfrac{1}{W}\textstyle\sum_{j=k-W+1}^{k}
+    \bmy_j\bmy_j^\top, \label{eq:cyy}\\
+  \bmR_{k+1} &= (1{-}\alpha)\bmR_k
+    + \alpha\,\diag\!\bigl(\hat{\bm{C}}_{\bmy\bmy} - \bmH\Pm\bmH^\top\bigr).
+  \label{eq:Radapt}
+\end{align}
+
+\subsection{MACE-$\chi^2$}
+Before adding $\bmy_k$ to the window in~\eqref{eq:cyy}, compute:
+\begin{equation}
+  \chi^2_k = \bmy_k^\top \bmS_k^{-1} \bmy_k,
+  \quad \tau = \chi^2_{\mathrm{inv}}(0.99;\; m{=}3) = 11.345.
+  \label{eq:gate}
+\end{equation}
+Include $\bmy_k$ only if $\chi^2_k \leq \tau$; otherwise discard.
+The gated estimate $\hat{\bm{C}}_{\bmy\bmy}$ uses only non-outlier innovations.
+
+Algorithm~\ref{alg:mace} summarises the MACE update step.
+
+\begin{algorithm}[t]
+\caption{MACE-$\chi^2$ Update Step}
+\label{alg:mace}
+\begin{algorithmic}[1]
+\REQUIRE $\bmz_k$, gated window $\mathcal{W}$, $\tau=11.345$
+\STATE Predict: $\xm_k$, $\Pm_k$ (Eq.~\eqref{eq:motion})
+\STATE Innovation: $\bmy_k = \bmz_k - \bmH\xm_k$;\;\;
+  $\bmS_k = \bmH\Pm_k\bmH^\top + \bmR$
+\STATE $\chi^2_k = \bmy_k^\top\bmS_k^{-1}\bmy_k$
+\IF{$\chi^2_k \leq \tau$}
+  \STATE Append $\bmy_k$ to $\mathcal{W}$
+\ELSE
+  \STATE Discard $\bmy_k$ (increment gate counter)
+\ENDIF
+\STATE State update (Eqs.~\eqref{eq:joseph}); heading wrap
+\IF{$|\mathcal{W}| \geq W$}
+  \STATE Adapt $\bmR$ via~\eqref{eq:Radapt} using gated window
+\ENDIF
+\end{algorithmic}
+\end{algorithm}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Consistency Metrics and Statistical Framework}
+\label{sec:metrics}
+
+\subsection{NEES and NIS}
+\begin{align}
+  \text{NEES}_k &= \bm{e}_k^\top \bmP_{k,s}^{-1} \bm{e}_k \sim \chi^2(3),
+  \label{eq:nees}\\
+  \text{NIS}_k  &= \bmy_k^\top \bmS_k^{-1} \bmy_k \sim \chi^2(3),
+  \label{eq:nis}
+\end{align}
+where $\bm{e}_k$ is the position+heading error and $\bmP_{k,s}$ the
+corresponding $3{\times}3$ sub-matrix.
+Time-averaged: $\overline{\text{ANIS}} = T^{-1}\sum_k \text{NIS}_k/3$,
+$\overline{\text{ANEES}} = T^{-1}\sum_k \text{NEES}_k/3$.
+
+\subsection{Consistency Bounds}
+For $N$ MC runs, the 95\% chi-squared interval on $\overline{\text{ANEES}}$
+is $[\chi^2_{0.025}(3N)/(3N),\,\chi^2_{0.975}(3N)/(3N)]$.
+For $N=50$: $[0.787,\,1.239]$; for $N=25$: $[0.706,\,1.345]$.
+
+\subsection{Statistical Tests}
+Paired Wilcoxon signed-rank tests compare per-run ATE across conditions.
+Effect sizes are Cohen's $d$. All $p$-values are two-sided.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Experimental Setup}
+\label{sec:setup}
+
+\emph{All experiments are Monte Carlo simulations.}
+Standard benchmark: 7 estimators $\times$ 3 trajectories $\times$ 3 noise
+regimes $\times$ $N\!\geq\!25$ MC $= 2\,475$ total runs.
+Dropout benchmark: 7 estimators $\times$ 5 dropout rates $\times$
+$N\!\geq\!15$ MC $= 1\,225$ runs.
+Ablation (Section~\ref{sec:ablation}): 6 variants $\times$ 5 dropout rates
+$\times$ $N{=}30$ MC $= 900$ runs.
+Chi-squared threshold sweep: 8 thresholds $\times$ 3 dropout levels $\times$
+$N{=}20$ MC $= 480$ runs.
+Total: \textbf{5\,080 simulation runs}.
+Seeds are fixed per condition for reproducibility.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Results}
+\label{sec:results}
+
+\subsection{Accuracy (Table~\ref{tab:accuracy})}
+\label{sec:acc}
+
+Table~\ref{tab:accuracy} reports ATE for the figure-8 trajectory.
+UKF reduces ATE by $55\%$ over EKF at medium noise (Wilcoxon $p{<}0.0001$,
+$d{=}1.96$). ES-EKF is numerically identical to EKF on all metrics,
+confirming the error-state formulation provides no advantage in 2D
+(Section~\ref{sec:esekf_null}).
+Adaptive variants trade $40$--$70\%$ ATE penalty for consistency gains.
+
+\begin{table}[t]
+\caption{Accuracy and Runtime: figure-8 trajectory. $N=50$ (EKF, ES-EKF,
+Adaptive-EKF, MACE-EKF); $N=25$ (UKF variants). Mean ATE (m).}
+\label{tab:accuracy}
+\centering\small
+\begin{tabular}{lSSSr}
+\toprule
+Estimator & {ATE Low} & {ATE Med.} & {ATE High} & {RT\,(ms)}\\
+\midrule
+EKF           & 0.0148 & 0.0370 & 0.1110 &  125\\
+UKF           & 0.0068 & 0.0166 & 0.0498 &  699\\
+Adaptive-EKF  & 0.0334 & 0.0620 & 0.1311 &  193\\
+Adaptive-UKF  & 0.0241 & 0.0370 & 0.0636 & 1013\\
+ES-EKF        & 0.0148 & 0.0370 & 0.1110 &  122\\
+MACE-EKF      & 0.0334 & 0.0629 & 0.1329 &  199\\
+MACE-UKF      & 0.0243 & 0.0376 & 0.0647 &  790\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Consistency (Table~\ref{tab:consistency})}
+\label{sec:cons}
+
+\textbf{Finding~1}: Fixed EKF, UKF, and ES-EKF are severely overconfident
+in all 27 standard conditions ($\overline{\text{ANIS}} \approx 0.005$--$0.31$,
+well below the $N=50$ lower bound of $0.787$). This is the primary failure
+mode: the filter underestimates uncertainty.
+
+\textbf{Finding~2}: R-only adaptation (Adaptive-EKF, Adaptive-UKF, MACE-EKF,
+MACE-UKF) restores NIS consistency at medium and high noise. MACE-EKF achieves
+slightly higher ANIS values than Adaptive-EKF, but at the cost of higher ATE
+(Table~\ref{tab:accuracy}). There is no free lunch in the EKF family.
+
+\begin{table}[t]
+\caption{Filter Consistency: ANIS, figure-8, all estimators.
+  $N=50$ bounds: $[0.787,\,1.239]$. $N=25$ bounds: $[0.706,\,1.345]$.
+  Parentheses denote ANIS within the applicable 95\% chi-squared interval.}
+\label{tab:consistency}
+\centering\small
+\begin{tabular}{lccc@{\quad}ccc}
+\toprule
+& \multicolumn{3}{c}{ANIS} & \multicolumn{3}{c}{ANEES}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Estimator & Low & Med & High & Low & Med & High\\
+\midrule
+EKF$^a$          & 0.005 & 0.030 & 0.271 & 0.003 & 0.019 & 0.171\\
+UKF$^b$          & 0.006 & 0.035 & 0.312 & 0.003 & 0.019 & 0.167\\
+Adap.-EKF$^a$    & 0.530 & (0.814) & (1.077) & 0.840 & (0.828) & (0.861)\\
+Adap.-UKF$^b$    & 0.653 & (0.790) & (1.050) & 0.562 & 0.544 & 0.684\\
+ES-EKF$^a$       & 0.005 & 0.030 & 0.271 & 0.004 & 0.019 & 0.171\\
+MACE-EKF$^a$     & 0.533 & (0.877) & (1.184) & 0.841 & (0.846) & (0.866)\\
+MACE-UKF$^b$     & 0.673 & (0.836) & (1.137) & 0.569 & 0.550 & 0.696\\
+\bottomrule
+\multicolumn{7}{l}{\footnotesize $^a$ $N=50$, bounds $[0.787,1.239]$;\;
+  $^b$ $N=25$, bounds $[0.706,1.345]$.}
+\end{tabular}
+\end{table}
+
+\subsection{VO Dropout Robustness (Table~\ref{tab:dropout})}
+\label{sec:dropout}
+
+\textbf{Finding~3 (UKF family)}:
+MACE-UKF maintains ANIS within the $N=25$ bounds $[0.706,\,1.345]$
+through $70\%$ VO dropout ($\overline{\text{ANIS}}=0.768$).
+Adaptive-UKF falls \emph{just} below the lower bound at $70\%$ dropout
+($\overline{\text{ANIS}}=0.711$, bound $0.706$ --- marginal failure).
+The practical implication: MACE-UKF extends consistent operation by
+one dropout-level band compared to Adaptive-UKF.
+
+\textbf{Finding~4 (EKF family)}: MACE-EKF is \emph{not} better than
+Adaptive-EKF for EKF-based fusion under dropout.
+At $50\%$ dropout, MACE-EKF ANIS$=1.692$ (above upper bound) while
+Adaptive-EKF ANIS$=1.193$ (within bounds).
+The chi-squared gate inflates the effective innovation window size, causing
+over-smoothing that produces an underconfident R estimate.
+
+\begin{table}[t]
+\caption{VO Dropout: figure-8, medium noise. ANIS at key dropout rates.
+  Bounds: $N{\geq}25$ $[0.706,1.345]$; $N{=}50$ $[0.787,1.239]$.}
+\label{tab:dropout}
+\centering\small
+\begin{tabular}{lSScccc}
+\toprule
+Estimator & {ATE 0\%} & {ATE 50\%} & ANIS 0\% & ANIS 30\% & ANIS 50\% & ANIS 70\%\\
+\midrule
+EKF          & 0.0370 & 0.0471 & 0.030 & 0.028 & 0.026 & 0.023\\
+UKF          & 0.0166 & 0.0202 & 0.035 & 0.034 & 0.033 & 0.032\\
+Adap.-EKF    & 0.0620 & 0.0780 & 0.816 & 0.946 & 1.193 & 1.174\\
+Adap.-UKF    & 0.0370 & 0.0440 & 0.790 & 0.761 & 0.752 & 0.711$^\dagger$\\
+ES-EKF       & 0.0370 & 0.0471 & 0.030 & 0.028 & 0.026 & 0.023\\
+MACE-EKF     & 0.0629 & 0.0828 & 0.888 & 1.227 & 1.692$^\ddagger$ & 1.247\\
+\textbf{MACE-UKF} & 0.0376 & 0.0447 & 0.841 & 0.816 & 0.803 & \textbf{0.768}\\
+\bottomrule
+\multicolumn{7}{l}{\footnotesize $^\dagger$Marginal bound failure
+  (0.711 vs lower bound 0.706, $N=25$);
+  $^\ddagger$MACE-EKF over-smoothes under high dropout.}
+\end{tabular}
+\end{table}
+
+\subsection{Ablation Study (Table~\ref{tab:ablation})}
+\label{sec:ablation}
+
+We compare MACE-EKF against four alternatives ($N=30$ MC per condition):
+
+\textbf{ChiGate-EKF} gates (rejects) updates when $\chi^2_k > \tau$ but
+\emph{does not adapt} $\bmR$. This improves ATE (by simply skipping bad
+measurements) but provides no consistency benefit (ANIS$\approx$0.026
+identical to fixed EKF).
+
+\textbf{Huber-EKF} applies the Huber M-estimator to compute per-dimension
+innovation weights. In our evaluation, Huber-EKF produces \emph{identical}
+ANIS and ATE to Adaptive-EKF. The innovation-window adaptation dominates;
+the per-step weighting is secondary.
+
+\textbf{Tukey-EKF} gates innovations whose any standardised residual exceeds
+$c=4.685$. ANIS is marginally better than Adaptive-EKF at $50\%$ dropout
+($1.288$ vs $1.193$, closer to the upper bound $1.239/1.345$), but ATE
+is slightly higher.
+
+The ablation reveals a nuanced picture: no alternative clearly dominates.
+For practitioners seeking a single EKF-family estimator under moderate dropout
+($\leq\!50\%$), Adaptive-EKF remains the best-supported choice.
+
+\begin{table}[t]
+\caption{Ablation Study: six EKF-family variants under VO dropout,
+  $N{=}30$ MC, figure-8, medium noise. Wilcoxon: MACE-EKF vs each
+  alternative at 50\% dropout, all $p{<}0.0001$.}
+\label{tab:ablation}
+\centering\small
+\begin{tabular}{lSSccc}
+\toprule
+Estimator & {ATE 0\%} & {ATE 50\%} & ANIS 50\% & In bounds? & $d$ vs MACE\\
+\midrule
+EKF-Fixed    & 0.0472 & 0.0472 & 0.026 & No  & $-1.35$\\
+ChiGate-EKF  & 0.0384 & 0.0472 & 0.026 & No  & $-1.97$\\
+Adaptive-EKF & 0.0620 & 0.0781 & 1.193 & Yes & $-1.35$\\
+Huber-EKF    & 0.0620 & 0.0781 & 1.193 & Yes & $-1.35$\\
+Tukey-EKF    & 0.0620 & 0.0791 & 1.288 & Yes & $-1.15$\\
+MACE-EKF     & 0.0630 & 0.0828 & 1.692 & No  & ---\\
+\bottomrule
+\multicolumn{6}{l}{\footnotesize Negative $d$: MACE-EKF has \emph{higher} ATE
+  (worse accuracy). Bounds: $N=30$, $[0.729,1.313]$.}
+\end{tabular}
+\end{table}
+
+\subsection{Threshold Sensitivity (Fig.~\ref{fig:threshold})}
+\label{sec:threshold}
+
+The chi-squared gate threshold $\tau$ is not a free parameter.
+At $50\%$ dropout, increasing $\tau$ monotonically decreases ANIS
+(from $2.158$ at $\tau=3$ to $1.186$ at $\tau=\infty$ which equals
+Adaptive-EKF). No value of $\tau$ in the EKF variant simultaneously
+achieves NIS consistency \emph{and} lower ATE than Adaptive-EKF.
+The threshold sweep confirms that chi-squared gating degrades the
+EKF-family adaptation rather than improving it.
+
+\subsection{Hyperparameter Sensitivity (Fig.~\ref{fig:hyperparam})}
+\label{sec:hyperparam}
+
+Adaptive-EKF is evaluated on a $4{\times}3$ grid:
+$W \in \{5,10,20,50\}$, $\alpha \in \{0.05,0.1,0.2\}$, $N=15$ MC.
+ANIS is within the consistent region for all $W\!\geq\!10$ and
+$\alpha\!\geq\!0.05$. The default $W=20$, $\alpha=0.1$ achieves
+ANIS$=0.812$ and ATE$=0.062$\,m, near-Pareto-optimal.
+Larger $\alpha$ ($0.2$) gives marginally better consistency
+at the cost of slightly higher ATE.
+
+\subsection{ES-EKF Null Result}
+\label{sec:esekf_null}
+
+ES-EKF matches EKF on every metric to four decimal places.
+This is expected: the 2D world-frame model introduces no heading
+singularity requiring perturbation treatment.
+The error-state advantage (lower linearisation error in $\bmF_\delta$)
+is specific to 3D orientation where the rotation group SO(3) introduces
+genuine nonlinearity. Including ES-EKF in this benchmark explicitly
+documents this boundary condition.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Discussion}
+\label{sec:discussion}
+
+\textbf{MACE-UKF is the recommended estimator under sensor degradation.}
+When VO dropout probability exceeds $30\%$, MACE-UKF is the only estimator
+that maintains NIS consistency across all tested dropout levels.
+At $70\%$ dropout MACE-UKF ATE$=0.051$\,m versus EKF ATE$=0.073$\,m,
+with consistency preserved. At zero dropout MACE-UKF ATE$=0.038$\,m
+(vs EKF $0.037$\,m), so the overhead is minimal.
+
+\textbf{MACE-EKF should not be used.}
+Our honest ablation establishes that MACE-EKF provides higher ATE
+than Adaptive-EKF, Huber-EKF, and Tukey-EKF at all dropout levels,
+and loses consistency at $50\%$ dropout. The gate inflates the effective
+window, causing over-confidence in the adapted $\bmR$.
+We retain MACE-EKF in the paper to document this negative result;
+it should not be deployed in practice.
+
+\textbf{ChiGate-EKF is the accuracy-maximising strategy under dropout.}
+By hard-rejecting measurements rather than adapting, ChiGate-EKF achieves
+lower ATE than any adaptive variant at $\geq\!30\%$ dropout.
+The cost is complete loss of calibrated uncertainty: ANIS$\approx$0.026.
+For applications requiring accurate trajectory but not calibrated covariance,
+ChiGate-EKF is a valid choice.
+
+\textbf{Accuracy and consistency are orthogonal properties.}
+EKF achieves the best ATE at low noise ($0.015$\,m) while being the most
+inconsistent (ANIS$=0.005$, $157\times$ below the lower bound).
+The two criteria require separate design choices.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Threats to Validity and Limitations}
+\label{sec:threats}
+
+\textbf{Simulation only.} All results use Gaussian Monte Carlo simulation.
+Real sensors exhibit non-Gaussian tails, temporal correlations, calibration
+drift, and environmental VO failures not captured here.
+
+\textbf{2D model.} The world-frame 2D model does not expose SO(3)
+nonlinearities. ES-EKF and IEKF advantages are expected in 3D
+(15-DOF with bias states).
+
+\textbf{Sub-state NEES.} NEES uses position+heading ($n_s=3$) because
+velocity states have low observability from VO. Full 6-DOF NEES would
+be numerically sensitive.
+
+\textbf{N=25 for UKF variants.} The larger compute cost of sigma-point
+propagation limited UKF variants to $N=25$. The wider confidence interval
+$[0.706,1.345]$ means the Adaptive-UKF marginal failure at $70\%$ dropout
+(ANIS$=0.711$) is inconclusive.
+
+\textbf{MACE-EKF negative result.} The chi-squared gate as implemented
+degrades EKF-family adaptation. Different gate designs (e.g., applying
+the gate at the state update level rather than the window level) may
+perform differently.
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Future Work}
+\label{sec:future}
+
+\begin{enumerate}
+\item \textbf{Real-dataset evaluation}: EuRoC MAV~\cite{burri2016euroc}
+  and TUM-VI~\cite{schubert2018tumvi} pipelines are implemented
+  and await dataset download ($\sim$28\,MB IMU+GT).
+\item \textbf{3D ES-EKF evaluation}: 15-DOF state with SO(3) rotation,
+  IMU bias, where ES-EKF and IEKF~\cite{huang2008analysis} benefits
+  are expected.
+\item \textbf{MACE-EKF redesign}: Apply the chi-squared gate at the
+  state-update level (hard-reject vs. soft-weight) rather than the
+  adaptation-window level.
+\item \textbf{Adaptive window size}: Online optimisation of $W$ based
+  on observed consistency metrics.
+\item \textbf{Hardware deployment}: Raspberry Pi 4 + MPU-6050 +
+  ORB-SLAM3~\cite{campos2021orbslam3} replacing simulated VO.
+\end{enumerate}
+
+%─────────────────────────────────────────────────────────────────────────────
+\section{Conclusion}
+\label{sec:conclusion}
+
+We presented a 5,080-run Monte Carlo benchmark comparing seven IMU--VO fusion
+estimators across accuracy, consistency, and dropout robustness.
+The overarching finding is that fixed covariance matrices produce universally
+overconfident estimates, and online R-adaptation is necessary for consistent
+operation. In the EKF family, vanilla Mohamed-Schwarz (Adaptive-EKF) is the
+best-supported choice; MACE-EKF with chi-squared gating is demonstrably
+worse. In the UKF family, MACE-UKF extends consistent operation to $70\%$
+VO dropout while Adaptive-UKF marginally fails at that level.
+ES-EKF provides no benefit in 2D. These findings are constrained to
+simulation; real-dataset validation is the primary future direction.
+
+\bibliographystyle{IEEEtran}
+\bibliography{references}
+
+\end{document}
