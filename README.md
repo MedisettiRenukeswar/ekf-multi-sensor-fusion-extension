@@ -264,6 +264,14 @@ If you use this code or results, please cite:
 
 ---
 
+## Publication
+
+📄 Paper: Filter Consistency in IMU–Visual Odometry Fusion  
+DOI: https://doi.org/10.13140/RG.2.2.30517.44002
+
+## Summary
+This repository contains the implementation of seven state estimators for IMU–VO fusion with consistency analysis using NEES/NIS and Monte Carlo benchmarks.
+
 <p align="center">
   <a href="mailto:medisettirenukeswar83@gmail.com">medisettirenukeswar83@gmail.com</a>
 </p>
